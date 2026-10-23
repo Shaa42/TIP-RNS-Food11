@@ -10,4 +10,4 @@ wheels/
 .venv
 
 # Database
-food-11/
+food-11*/
