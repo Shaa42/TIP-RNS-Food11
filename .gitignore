@@ -11,3 +11,9 @@ wheels/
 
 # Database
 food-11*/
+
+.DS_Store
+*.mat
+*.fig
+checkpoints*/
+*.asv
