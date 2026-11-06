@@ -1,0 +1,15 @@
+Nombre de paramètres : 1,329,163 (1.329 M)
+Meilleur F1 macro (validation) : 0.8473
+Frugalité = F1 - 0,3/(1+1/R) = 0.6762
+F1 par classe :
+  bread            0.763
+  dairy            0.776
+  dessert          0.794
+  egg              0.819
+  fried            0.828
+  meat             0.846
+  noodles-pasta    0.947
+  rice             0.883
+  seafood          0.830
+  soup             0.921
+  vegetable-fruit  0.914

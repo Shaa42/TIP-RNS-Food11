@@ -1,0 +1,12 @@
+true\pred,bread,dairy,dessert,egg,fried,meat,noodles-pasta,rice,seafood,soup,vegetable-fruit
+bread,103,0,5,7,9,3,0,2,3,1,2
+dairy,3,38,6,1,2,2,1,1,2,1,0
+dessert,7,0,158,5,4,12,0,0,7,4,3
+egg,9,1,4,104,2,7,0,1,0,2,1
+fried,2,0,5,2,99,7,0,1,1,0,0
+meat,2,0,7,0,5,156,0,0,3,3,1
+noodles-pasta,0,0,0,1,0,0,54,0,0,3,0
+rice,2,0,1,0,0,0,0,34,0,0,0
+seafood,4,0,6,1,0,5,0,0,100,4,0
+soup,2,2,5,1,1,0,1,0,1,187,0
+vegetable-fruit,1,0,1,1,0,0,0,1,4,1,85
