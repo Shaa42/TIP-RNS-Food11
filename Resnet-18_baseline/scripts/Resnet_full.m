@@ -2,11 +2,27 @@ clear;
 close all;
 clc;
 
-%% 1. Project and data paths
-scriptPath = mfilename("fullpath");
-projectDir = fileparts(scriptPath);
-trainFolder = fullfile(projectDir,"food-11-resized","train");
-testFolder = fullfile(projectDir,"food-11-resized","test");
+%% 1. Project, data and output paths
+scriptDir = fileparts(mfilename("fullpath"));
+baselineDir = fileparts(scriptDir);
+repoDir = fileparts(baselineDir);
+
+resultsDir = fullfile(baselineDir,"results");
+modelsDir = fullfile(baselineDir,"models");
+checkpointsDir = fullfile(baselineDir,"checkpoints");
+
+if ~isfolder(resultsDir)
+    mkdir(resultsDir);
+end
+if ~isfolder(modelsDir)
+    mkdir(modelsDir);
+end
+if ~isfolder(checkpointsDir)
+    mkdir(checkpointsDir);
+end
+
+trainFolder = fullfile(repoDir,"food-11-resized","train");
+testFolder = fullfile(repoDir,"food-11-resized","test");
 
 assert(isfolder(trainFolder),"Training folder not found: %s",trainFolder);
 assert(isfolder(testFolder),"Test folder not found: %s",testFolder);
@@ -68,9 +84,9 @@ fprintf("Stage 2 maximum iterations: %d\n", ...
     fineTuneEpochs*iterationsPerEpoch);
 
 warmupCheckpointFolder = fullfile( ...
-    projectDir,"checkpoints_resnet18_full_stage1");
+    checkpointsDir,"resnet18_full_stage1");
 fineTuneCheckpointFolder = fullfile( ...
-    projectDir,"checkpoints_resnet18_full_stage2");
+    checkpointsDir,"resnet18_full_stage2");
 
 if ~isfolder(warmupCheckpointFolder)
     mkdir(warmupCheckpointFolder);
@@ -177,9 +193,11 @@ cm.Normalization = "row-normalized";
 cm.RowSummary = "row-normalized";
 cm.ColumnSummary = "column-normalized";
 title("ResNet-18 Fine-Tuned Validation Confusion Matrix");
+exportgraphics(gcf,fullfile(resultsDir, ...
+    "confusion_matrix_full.png"),Resolution=200);
 
 %% 10. Save the complete model
-modelPath = fullfile(projectDir,"food11_resnet18_full.mat");
+modelPath = fullfile(modelsDir,"food11_resnet18_full.mat");
 save(modelPath, ...
     "netTrained","classNames","validationAccuracy","macroF1", ...
     "f1PerClass","precision","recall", ...
@@ -206,7 +224,7 @@ assert(numel(unique(testIds)) == numel(testIds), ...
 predictionMap = containers.Map( ...
     cellstr(testIds),cellstr(string(testPredictions)));
 jsonText = jsonencode(predictionMap,PrettyPrint=true);
-jsonPath = fullfile(projectDir, ...
+jsonPath = fullfile(resultsDir, ...
     "food11_resnet18_full_predictions.json");
 
 fileId = fopen(jsonPath,"w");

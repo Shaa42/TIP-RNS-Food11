@@ -2,12 +2,30 @@ clear;
 close all;
 clc;
 
-%% 1. 定位数据集
-scriptPath = mfilename("fullpath");
-projectDir = fileparts(scriptPath);
+%% 1. 定位项目、数据集和输出目录
+scriptDir = fileparts(mfilename("fullpath"));
+baselineDir = fileparts(scriptDir);
+repoDir = fileparts(baselineDir);
 
-trainFolder = fullfile(projectDir, ...
+resultsDir = fullfile(baselineDir,"results");
+modelsDir = fullfile(baselineDir,"models");
+checkpointsDir = fullfile(baselineDir,"checkpoints");
+
+if ~isfolder(resultsDir)
+    mkdir(resultsDir);
+end
+if ~isfolder(modelsDir)
+    mkdir(modelsDir);
+end
+if ~isfolder(checkpointsDir)
+    mkdir(checkpointsDir);
+end
+
+trainFolder = fullfile(repoDir, ...
     "food-11-resized", "train");
+
+assert(isfolder(trainFolder), ...
+    "Training folder not found: %s",trainFolder);
 
 %% 2. 读取有标签的训练图片
 imdsAll = imageDatastore(trainFolder, ...
@@ -76,7 +94,7 @@ iterationsPerEpoch = ceil( ...
 fprintf("Iterations per epoch: %d\n",iterationsPerEpoch);
 fprintf("Maximum training iterations: %d\n",3*iterationsPerEpoch);
 
-checkpointFolder = fullfile(projectDir,"checkpoints_resnet18_head");
+checkpointFolder = fullfile(checkpointsDir,"resnet18_head");
 if ~isfolder(checkpointFolder)
     mkdir(checkpointFolder);
 end
@@ -144,9 +162,11 @@ cm.Normalization = "row-normalized";
 cm.RowSummary = "row-normalized";
 cm.ColumnSummary = "column-normalized";
 title("ResNet-18 Head-Only Validation Confusion Matrix");
+exportgraphics(gcf,fullfile(resultsDir, ...
+    "confusion_matrix_head_only.png"),Resolution=200);
 
 %% 12. 保存模型和训练信息
-save(fullfile(projectDir, ...
+save(fullfile(modelsDir, ...
     "food11_resnet18_head_only.mat"), ...
     "netTrained", ...
     "classNames", ...
@@ -156,8 +176,11 @@ save(fullfile(projectDir, ...
     "trainingInfo");
 
 %% 13. 读取无标签测试集
-testFolder = fullfile(projectDir, ...
+testFolder = fullfile(repoDir, ...
     "food-11-resized", "test");
+
+assert(isfolder(testFolder), ...
+    "Test folder not found: %s",testFolder);
 
 imdsTest = imageDatastore(testFolder);
 
@@ -196,7 +219,7 @@ jsonText = jsonencode( ...
     predictionMap, PrettyPrint=true);
 
 %% 17. 保存JSON文件
-jsonPath = fullfile(projectDir, ...
+jsonPath = fullfile(resultsDir, ...
     "food11_resnet18_head_only_predictions.json");
 
 fileId = fopen(jsonPath,"w");
