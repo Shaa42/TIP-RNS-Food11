@@ -1,0 +1,18 @@
+Architecture: shufflenet_v2_x0_5 (ImageNet-pretrained)
+Parameters: 353,067 (0.353 M)
+Class weighting: none
+Augmentation: current
+Best validation flip-TTA macro-F1: 0.8877
+Frugality = F1 - 0.3/(1+1/R) = 0.8094
+Per-class F1:
+  bread            0.827
+  dairy            0.816
+  dessert          0.837
+  egg              0.865
+  fried            0.854
+  meat             0.891
+  noodles-pasta    0.906
+  rice             0.960
+  seafood          0.915
+  soup             0.952
+  vegetable-fruit  0.942

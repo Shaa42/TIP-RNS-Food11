@@ -1,0 +1,17 @@
+Teacher: shufflenet_v2_x1_0 (1,264,879 parameters, frozen)
+Student: shufflenet_v2_x0_5 (353,067 parameters)
+Distillation: alpha=0.5, temperature=3
+Best validation flip-TTA macro-F1: 0.8937
+Student frugality: 0.8154
+Per-class F1:
+  bread            0.834
+  dairy            0.796
+  dessert          0.854
+  egg              0.898
+  fried            0.868
+  meat             0.897
+  noodles-pasta    0.922
+  rice             0.959
+  seafood          0.913
+  soup             0.943
+  vegetable-fruit  0.947
