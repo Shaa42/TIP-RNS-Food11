@@ -17,3 +17,8 @@ food-11*/
 *.fig
 checkpoints*/
 *.asv
+
+# Local training outputs and model weights
+/runs_*/
+*.pt
+*.pth

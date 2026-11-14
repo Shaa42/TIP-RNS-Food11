@@ -15,7 +15,8 @@ Usage (from the project folder):
 Add --test-dir path/to/food-11/test to also write the JSON of predictions (runs_<arch>/predictions.json).
 Compare the "Frugality" line printed at the end of each run and submit the best one only once.
 
-Outputs (runs_<arch>/): best_model.pt, log.csv, confusion.csv, summary.txt, predictions.json (optional).
+Outputs (runs_<arch>/): checkpoints/epoch_XX.pt, best_model.pt, log.csv, confusion.csv,
+summary.txt, predictions.json (optional).
 """
 
 import argparse
@@ -93,20 +94,36 @@ def build_model(arch, num_classes, pretrained):
 
 
 @torch.no_grad()
-def evaluate(model, loader, loss_fn, device, num_classes):
+def evaluate(model, loader, loss_fn, device, num_classes, flip_tta=False, weighted_loss_fn=None):
+    """Evaluate with a single view or horizontal-flip TTA."""
     model.eval()
-    total, n = 0.0, 0
+    total, weighted_total, n = 0.0, 0.0, 0
     confusion = torch.zeros(num_classes, num_classes, dtype=torch.long)
+
     for x, y in loader:
         x, y = x.to(device), y.to(device)
+
         with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
             logits = model(x)
-        total += loss_fn(logits.float(), y).item() * x.size(0)
+            probabilities = logits.float().softmax(1)
+
+            if flip_tta:
+                flipped_logits = model(torch.flip(x, dims=[3]))
+                flipped_probabilities = flipped_logits.float().softmax(1)
+                probabilities = (probabilities + flipped_probabilities) / 2
+
+        log_probabilities = probabilities.clamp_min(1e-8).log()
+        total += loss_fn(log_probabilities, y).item() * x.size(0)
+        weighted_total += (weighted_loss_fn or loss_fn)(log_probabilities, y).item() * x.size(0)
         n += x.size(0)
-        for t, p in zip(y.cpu(), logits.argmax(1).cpu()):
-            confusion[t, p] += 1
+
+        predictions = probabilities.argmax(1)
+        for target, prediction in zip(y.cpu(), predictions.cpu()):
+            confusion[target, prediction] += 1
+
     f1, per_class = macro_f1(confusion)
-    return total / n, confusion.diag().sum().item() / n, f1, per_class, confusion
+    accuracy = confusion.diag().sum().item() / n
+    return total / n, weighted_total / n, accuracy, f1, per_class, confusion
 
 
 @torch.no_grad()
@@ -121,7 +138,7 @@ def predict_test(model, classes, img_size, test_dir, out_path, device):
     for i in range(0, len(files), 128):
         batch = files[i:i + 128]
         x = torch.stack([tf(Image.open(p).convert("RGB")) for p in batch]).to(device)
-        probs = model(x).softmax(1) + model(torch.flip(x, dims=[3])).softmax(1)
+        probs = (model(x).float().softmax(1) + model(torch.flip(x, dims=[3])).float().softmax(1)) / 2
         for p, k in zip(batch, probs.argmax(1).tolist()):
             preds[p.stem] = classes[k]
     Path(out_path).write_text(json.dumps(preds, indent=4), encoding="utf-8")
@@ -142,6 +159,10 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3, help="peak LR of the backbone (head gets 5x)")
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--label-smoothing", type=float, default=0.1)
+    ap.add_argument("--class-weight", choices=["none", "sqrt-inverse", "inverse"], default="none",
+                    help="class weighting used only for the training loss")
+    ap.add_argument("--augmentation", choices=["current", "mild"], default="current",
+                    help="training augmentation recipe")
     ap.add_argument("--val-ratio", type=float, default=0.1)
     ap.add_argument("--workers", type=int, default=0 if os.name == "nt" else 4)
     ap.add_argument("--seed", type=int, default=42)
@@ -150,17 +171,35 @@ def main():
 
     set_seed(args.seed)
     out = args.out_dir or Path(f"runs_{args.arch}")
-    out.mkdir(exist_ok=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    out.mkdir(exist_ok=True, parents=True)
+    checkpoint_dir = out / "checkpoints"
+    checkpoint_dir.mkdir(exist_ok=True, parents=True)
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     S = args.img_size
 
-    train_tf = transforms.Compose([
-        transforms.RandomResizedCrop(S, scale=(0.4, 1.0)),
-        transforms.RandomHorizontalFlip(),
-        transforms.TrivialAugmentWide(),                       # light, parameter-free strong augmentation
-        transforms.ToTensor(), transforms.Normalize(MEAN, STD),
-        transforms.RandomErasing(p=0.2),
-    ])
+    if args.augmentation == "mild":
+        train_tf = transforms.Compose([
+            transforms.RandomResizedCrop(S, scale=(0.7, 1.0), ratio=(0.85, 1.15)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(8, interpolation=transforms.InterpolationMode.BILINEAR,
+                                      fill=(124, 116, 104)),
+            transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15, hue=0.02),
+            transforms.ToTensor(), transforms.Normalize(MEAN, STD),
+            transforms.RandomErasing(p=0.1, scale=(0.02, 0.10)),
+        ])
+    else:
+        train_tf = transforms.Compose([
+            transforms.RandomResizedCrop(S, scale=(0.4, 1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.TrivialAugmentWide(),
+            transforms.ToTensor(), transforms.Normalize(MEAN, STD),
+            transforms.RandomErasing(p=0.2),
+        ])
     val_tf = transforms.Compose([
         transforms.Resize(int(S * 1.14)), transforms.CenterCrop(S),
         transforms.ToTensor(), transforms.Normalize(MEAN, STD)])
@@ -191,11 +230,27 @@ def main():
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer, max_lr=[args.lr, args.lr * 5], epochs=args.epochs,
         steps_per_epoch=len(train_loader), pct_start=0.2)
-    loss_fn = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    class_counts = torch.bincount(torch.tensor([full_train.targets[i] for i in tr_idx]), minlength=len(classes)).float()
+    if args.class_weight == "sqrt-inverse":
+        class_weights = class_counts.rsqrt()
+    elif args.class_weight == "inverse":
+        class_weights = class_counts.reciprocal()
+    else:
+        class_weights = torch.ones_like(class_counts)
+    class_weights /= class_weights.mean()
+    train_loss_fn = nn.CrossEntropyLoss(weight=class_weights.to(device), label_smoothing=args.label_smoothing)
+    val_loss_fn = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    print(f"Class weighting: {args.class_weight}")
+    print(f"Augmentation: {args.augmentation}")
+    if args.class_weight != "none":
+        for class_name, count, weight in zip(classes, class_counts.tolist(), class_weights.tolist()):
+            print(f"  {class_name:16s} count={int(count):4d} weight={weight:.3f}")
     scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda")
 
     with open(out / "log.csv", "w", newline="") as f:
-        csv.writer(f).writerow(["epoch", "train_loss", "val_loss", "val_acc", "val_macro_f1", "seconds"])
+        csv.writer(f).writerow(["epoch", "train_weighted_loss", "val_flip_tta_unweighted_loss",
+                                "val_flip_tta_weighted_loss", "val_flip_tta_acc",
+                                "val_flip_tta_macro_f1", "seconds"])
 
     best_f1, best_per_class = -1.0, None
     for epoch in range(1, args.epochs + 1):
@@ -204,7 +259,7 @@ def main():
         for x, y in train_loader:
             x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
             with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
-                loss = loss_fn(model(x).float(), y)
+                loss = train_loss_fn(model(x).float(), y)
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -212,29 +267,53 @@ def main():
             scheduler.step()
             running += loss.item() * x.size(0)
             seen += x.size(0)
-        val_loss, val_acc, val_f1, per_class, confusion = evaluate(model, val_loader, loss_fn, device, len(classes))
+        val_loss, val_weighted_loss, val_acc, val_f1, per_class, confusion = evaluate(
+            model, val_loader, val_loss_fn, device, len(classes), flip_tta=True,
+            weighted_loss_fn=train_loss_fn)
+
+        checkpoint = {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "scaler": scaler.state_dict(),
+            "classes": classes,
+            "img_size": S,
+            "arch": args.arch,
+            "class_weight": args.class_weight,
+            "augmentation": args.augmentation,
+            "epoch": epoch,
+            "val_flip_tta_unweighted_loss": val_loss,
+            "val_flip_tta_weighted_loss": val_weighted_loss,
+            "val_flip_tta_acc": val_acc,
+            "val_flip_tta_f1": val_f1,
+        }
+        torch.save(checkpoint, checkpoint_dir / f"epoch_{epoch:02d}.pt")
+
         mark = ""
         if val_f1 > best_f1:
             best_f1, best_per_class = val_f1, per_class
-            torch.save({"model": model.state_dict(), "classes": classes, "img_size": S, "arch": args.arch},
-                       out / "best_model.pt")
+            torch.save(checkpoint, out / "best_model.pt")
             with open(out / "confusion.csv", "w", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(["true\\pred"] + classes)
                 for c, row in zip(classes, confusion.tolist()):
                     w.writerow([c] + row)
-            mark = "  * best"
+            mark = "  * best flip-TTA"
         secs = time.time() - t0
-        print(f"epoch {epoch:2d}/{args.epochs} | train {running / seen:.3f} | val {val_loss:.3f} "
-              f"| acc {val_acc:.3f} | F1 {val_f1:.3f} | {secs:.0f}s{mark}")
+        print(f"epoch {epoch:2d}/{args.epochs} | train weighted {running / seen:.3f} "
+              f"| val TTA loss {val_loss:.3f}/{val_weighted_loss:.3f} (unweighted/weighted) "
+              f"| TTA acc {val_acc:.3f} | TTA F1 {val_f1:.3f} | {secs:.0f}s{mark}")
         with open(out / "log.csv", "a", newline="") as f:
-            csv.writer(f).writerow([epoch, f"{running / seen:.4f}", f"{val_loss:.4f}", f"{val_acc:.4f}",
-                                    f"{val_f1:.4f}", f"{secs:.1f}"])
+            csv.writer(f).writerow([epoch, f"{running / seen:.4f}", f"{val_loss:.4f}",
+                                    f"{val_weighted_loss:.4f}", f"{val_acc:.4f}", f"{val_f1:.4f}",
+                                    f"{secs:.1f}"])
 
     lines = [
         f"Architecture: {args.arch} ({'random init' if args.no_pretrained else 'ImageNet-pretrained'})",
         f"Parameters: {n_params:,} ({n_params / 1e6:.3f} M)",
-        f"Best validation macro-F1: {best_f1:.4f}",
+        f"Class weighting: {args.class_weight}",
+        f"Augmentation: {args.augmentation}",
+        f"Best validation flip-TTA macro-F1: {best_f1:.4f}",
         f"Frugality = F1 - 0.3/(1+1/R) = {frugality(best_f1, n_params):.4f}",
         "Per-class F1:",
     ] + [f"  {c:16s} {s:.3f}" for c, s in zip(classes, best_per_class)]
